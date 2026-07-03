@@ -11,6 +11,8 @@ tabbed away.
 That's it. A draggable countdown window appears, turns yellow in the last
 minute, flashes red in the last ten seconds, and rings when time is up.
 
+![The Chime timer window in game](screenshot.png)
+
 ## Install
 
 Clone (or download) into your Windower addons folder:
