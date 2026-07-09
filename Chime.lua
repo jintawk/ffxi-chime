@@ -32,7 +32,12 @@ _addon.version = '1.1.1'
 _addon.commands = {'chime', 'timer', 'tm'}
 
 local config = require('config')
-local slate = require('slate')
+-- shared Slate UI lib from the Windower workspace when present (kept
+-- current there); the bundled copy makes a standalone clone work
+local ok, slate = pcall(require, 'slate')
+if not ok then
+    slate = require('slate_bundled')
+end
 
 local defaults = {
     display = {
