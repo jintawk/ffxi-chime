@@ -28,11 +28,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 _addon.name = 'Chime'
 _addon.author = 'Jintawk'
-_addon.version = '1.0.2'
+_addon.version = '1.1.1'
 _addon.commands = {'chime', 'timer', 'tm'}
 
 local config = require('config')
-local texts = require('texts')
+local slate = require('slate')
 
 local defaults = {
     display = {
@@ -58,6 +58,7 @@ local defaults = {
     crit_at = 10,
     linger = 12,
     snooze = '5m',
+    ui = {scale = 1, minimized = false},
     colors = {
         ok = {r = 120, g = 220, b = 140},
         warn = {r = 245, g = 215, b = 90},
@@ -73,7 +74,68 @@ local defaults = {
 }
 
 local settings = config.load(defaults)
-local display = texts.new('', settings.display, settings)
+
+-------------------------------------------------------------------------------
+-- Slate HUD scaffolding (libs/slate.lua)
+-------------------------------------------------------------------------------
+
+local UI_W  = 240
+local ROW_H = 18
+local CRIT_DIM = {150, 60, 60, 255}    -- dim phase of the critical flash
+
+local ui = {
+    built = false,
+    panel = nil,
+    rows = {},      -- pooled timer rows: {name, time, bar}
+    extras = {},    -- pooled banner / overflow labels
+}
+
+local function build_ui()
+    if ui.built then
+        return
+    end
+    ui.built = true
+    slate.set_scale(tonumber(settings.ui.scale) or 1)
+    ui.panel = slate.Panel({
+        x = settings.display.pos.x,
+        y = settings.display.pos.y,
+        w = UI_W,
+        content_h = 40,
+        title = 'CHIME',
+        minimized = settings.ui.minimized,
+        on_move = function(x, y)
+            settings.display.pos.x = x
+            settings.display.pos.y = y
+            config.save(settings)
+        end,
+        on_minimize = function(min)
+            settings.ui.minimized = min
+            config.save(settings)
+        end,
+    })
+end
+
+local function ensure_rows(n)
+    for i = #ui.rows + 1, n do
+        local row = {
+            name = slate.Label({size = 10, color = slate.color.text}),
+            time = slate.Label({size = 10, font = slate.font.mono, color = slate.color.ok}),
+            bar  = slate.Bar({w = 58, h = 10, text = false}),
+        }
+        ui.panel:add(row.name, 10, 0)
+        ui.panel:add(row.time, 122, 0)
+        ui.panel:add(row.bar, 172, 0)
+        ui.rows[i] = row
+    end
+end
+
+local function ensure_extras(n)
+    for i = #ui.extras + 1, n do
+        local lbl = slate.Label({size = 10, bold = true, color = slate.color.warn})
+        ui.panel:add(lbl, 10, 0)
+        ui.extras[i] = lbl
+    end
+end
 
 local timers = {}        -- {name, duration, every, end_at, remaining, paused, repeating, command}
 local finished = {}      -- ringing/lingering: {name, until_clock}
@@ -471,17 +533,14 @@ end
 -------------------------------------------------------------------------------
 
 local function render()
+    build_ui()
     local now = os.time()
     local bright = math.floor(os.clock() * 2) % 2 == 0
-    local C = settings.colors
     local lw = tonumber(settings.label_width) or 14
-    local barw = tonumber(settings.bar.width) or 10
     local list = sorted_timers()
     local maxv = tonumber(settings.max_visible) or 8
 
-    -- Precompute rows so the time column can be aligned
     local rows = {}
-    local timew = 4
     local shown, hidden = 0, 0
     for _, t in ipairs(list) do
         if shown >= maxv then
@@ -490,85 +549,89 @@ local function render()
             shown = shown + 1
             local rem = t.paused and t.remaining or (t.end_at - now)
             if rem < 0 then rem = 0 end
-            local clock = fmt_clock(rem)
-            if #clock > timew then timew = #clock end
-            rows[#rows + 1] = {t = t, rem = rem, clock = clock}
+            rows[#rows + 1] = {t = t, rem = rem, clock = fmt_clock(rem)}
         end
     end
 
-    local width = 1 + lw + 1 + timew + (settings.bar.show and (1 + barw) or 0) + 1
-    local lines = {}
+    local n_extras = #finished + (hidden > 0 and 1 or 0)
+    ensure_rows(#rows)
+    ensure_extras(n_extras)
+    ui.panel:content_height(4 + (#rows + n_extras) * ROW_H + 4)
 
-    if settings.show_header then
-        local title = hidden > 0
-            and string.format(' TIMERS %d/%d ', shown, shown + hidden)
-            or ' TIMERS '
-        local fill = width - ulen(title)
-        if fill < 2 then fill = 2 end
-        lines[#lines + 1] = cs(C.muted) .. title .. string.rep('─', fill) .. CR
-    end
+    local line = 0
+    local extra_i = 0
 
+    -- ringing / lingering banners first, flashing until they expire
     for _, f in ipairs(finished) do
-        local col = bright and C.done or C.flash
-        local text = '» ' .. f.name .. " - TIME'S UP! «"
-        local pad = math.floor((width - ulen(text)) / 2)
-        if pad < 0 then pad = 0 end
-        lines[#lines + 1] = string.rep(' ', pad) .. cs(col) .. text .. CR
+        extra_i = extra_i + 1
+        local lbl = ui.extras[extra_i]
+        ui.panel:place(lbl, 10, 4 + line * ROW_H)
+        lbl:text(f.name .. " - TIME'S UP!")
+        lbl:color(bright and slate.color.warn or slate.color.title)
+        line = line + 1
     end
 
-    for _, row in ipairs(rows) do
-        local t, rem = row.t, row.rem
+    for i, row_data in ipairs(rows) do
+        local t, rem = row_data.t, row_data.rem
         local frac = t.duration > 0 and rem / t.duration or 0
         if frac > 1 then frac = 1 end
 
         local col
         if t.paused then
-            col = C.muted
+            col = slate.color.text_faint
         elseif rem <= (tonumber(settings.crit_at) or 10) then
-            col = bright and C.crit or C.crit_dim
+            col = bright and slate.color.bad or CRIT_DIM
         elseif rem <= (tonumber(settings.warn_at) or 60) then
-            col = C.warn
+            col = slate.color.warn
         else
-            col = C.ok
+            col = slate.color.ok
         end
 
-        local icon, icon_col = nil, C.accent
-        if t.repeating then
-            icon = settings.icons.repeating
-        elseif t.paused then
-            icon = settings.icons.paused
-            icon_col = C.muted
-        end
-
-        local avail = lw - (icon and (ulen(icon) + 1) or 0)
         local label = t.name
-        if ulen(label) > avail then
-            label = usub(label, avail - 1) .. '…'
+        if ulen(label) > lw then
+            label = usub(label, lw - 1) .. '…'
         end
-        local label_part = cs(t.paused and C.muted or C.label) .. label .. CR
-        if icon then
-            label_part = label_part .. ' ' .. cs(icon_col) .. icon .. CR
+        if t.repeating then
+            label = label .. ' ' .. settings.icons.repeating
+        elseif t.paused then
+            label = label .. ' ' .. settings.icons.paused
         end
-        label_part = label_part .. string.rep(' ', avail - ulen(label))
 
-        local time_part = cs(col) .. string.rep(' ', timew - #row.clock) .. row.clock .. CR
-
-        local bar_part = ''
+        local row = ui.rows[i]
+        local ry = 4 + line * ROW_H
+        ui.panel:place(row.name, 10, ry)
+        ui.panel:place(row.time, 122, ry + 1)
+        ui.panel:place(row.bar, 172, ry + 3)
+        row.name:text(label)
+        row.name:color(t.paused and slate.color.text_faint or slate.color.text)
+        row.time:text(row_data.clock)
+        row.time:color(col)
         if settings.bar.show then
-            local fill = math.floor(frac * barw + 0.5)
-            if rem > 0 and fill == 0 then fill = 1 end
-            bar_part = ' ' .. cs(t.paused and C.muted or col) .. settings.bar.full:rep(fill) .. CR
-                .. cs(C.dim) .. settings.bar.empty:rep(barw - fill) .. CR
+            row.bar:set(frac, nil, t.paused and slate.color.track_off_hl or col)
         end
-
-        lines[#lines + 1] = ' ' .. label_part .. ' ' .. time_part .. bar_part
+        line = line + 1
     end
 
     if hidden > 0 then
-        lines[#lines + 1] = cs(C.muted) .. ' +' .. hidden .. ' more…' .. CR
+        extra_i = extra_i + 1
+        local lbl = ui.extras[extra_i]
+        ui.panel:place(lbl, 10, 4 + line * ROW_H)
+        lbl:text('+' .. hidden .. ' more…')
+        lbl:color(slate.color.text_faint)
     end
 
-    display:text(table.concat(lines, '\n'))
+    -- pooled widget visibility for the current row count
+    if ui.panel:visible() and not ui.panel:is_minimized() then
+        for i = 1, #ui.rows do
+            local v = i <= #rows
+            ui.rows[i].name:visible(v)
+            ui.rows[i].time:visible(v)
+            ui.rows[i].bar:visible(v and settings.bar.show or false)
+        end
+        for i = 1, #ui.extras do
+            ui.extras[i]:visible(i <= extra_i)
+        end
+    end
 end
 
 local function tick()
@@ -601,10 +664,15 @@ local function tick()
     local visible = player ~= nil and player.status ~= 4
         and (#timers > 0 or #finished > 0)
     if visible then
-        render()
-        display:show()
-    else
-        display:hide()
+        build_ui()
+        if not ui.panel:visible() then
+            ui.panel:show()
+        end
+        if not ui.panel:is_minimized() then
+            render()
+        end
+    elseif ui.built and ui.panel:visible() then
+        ui.panel:hide()
     end
 end
 
@@ -783,7 +851,7 @@ local function cmd_list()
     end
 end
 
-local SET_KEYS = 'sound, repeats, gap, warn, crit, linger, snooze, size, font, bg, bar, barwidth, label, max, header, chat, icon_repeat, icon_pause'
+local SET_KEYS = 'sound, repeats, gap, warn, crit, linger, snooze, scale, bar, label, max, header, chat, icon_repeat, icon_pause'
 
 local function cmd_set(key, val)
     key = (key or ''):lower()
@@ -835,24 +903,16 @@ local function cmd_set(key, val)
         if not parse_duration({val}, 1) then msg('Bad duration.') return end
         settings.snooze = val
         msg('Default snooze: ' .. val .. '.')
-    elseif key == 'size' and num then
-        settings.display.text.size = math.floor(num)
-        display:size(settings.display.text.size)
-        msg('Font size ' .. settings.display.text.size .. '.')
-    elseif key == 'font' then
-        settings.display.text.font = val
-        display:font(val)
-        msg('Font: ' .. val .. '.')
-    elseif key == 'bg' and num then
-        settings.display.bg.alpha = math.max(0, math.min(255, math.floor(num)))
-        display:bg_alpha(settings.display.bg.alpha)
-        msg('Background alpha ' .. settings.display.bg.alpha .. '.')
+    elseif key == 'scale' and num then
+        settings.ui.scale = math.max(0.5, math.min(3, num))
+        slate.set_scale(settings.ui.scale)
+        msg('HUD scale ' .. settings.ui.scale .. '.')
+    elseif key == 'size' or key == 'font' or key == 'bg' or key == 'barwidth' then
+        msg('The HUD is styled by Slate now - use //timer set scale <0.5-3>.')
+        return
     elseif key == 'bar' then
         settings.bar.show = on
         msg('Progress bars ' .. (on and 'on' or 'off') .. '.')
-    elseif key == 'barwidth' and num then
-        settings.bar.width = math.max(4, math.min(30, math.floor(num)))
-        msg('Bar width ' .. settings.bar.width .. '.')
     elseif key == 'label' and num then
         settings.label_width = math.max(6, math.min(30, math.floor(num)))
         msg('Label width ' .. settings.label_width .. '.')
@@ -895,7 +955,7 @@ local function cmd_help()
         '//timer clear                remove all timers',
         '//timer sound [name|off]     pick alert sound; sounds lists them, test previews',
         '//timer set <key> <value>    tweak: ' .. SET_KEYS,
-        'Drag the window to move it. Timers survive //lua reload and relog.',
+        'Drag the title bar to move it; the minus button minimizes. Timers survive //lua reload and relog.',
     }
     for _, l in ipairs(lines) do
         windower.add_to_chat(207, chat_sanitize(l))
@@ -903,6 +963,9 @@ local function cmd_help()
 end
 
 local function handle_command(...)
+    if slate.handle_command(...) then
+        return
+    end
     local args = {...}
     local sub = (args[1] or ''):lower()
 
@@ -1041,11 +1104,12 @@ local function handle_command(...)
         local x, y = tonumber(args[2]), tonumber(args[3])
         if x and y then
             settings.display.pos.x, settings.display.pos.y = x, y
-            display:pos(x, y)
+            build_ui()
+            ui.panel:pos(x, y)
             config.save(settings)
             msg(string.format('Moved to %d, %d.', x, y))
         else
-            msg('Usage: //timer pos <x> <y> - or just drag the window.')
+            msg('Usage: //timer pos <x> <y> - or just drag the title bar.')
         end
 
     elseif action == 'save' then
@@ -1074,6 +1138,8 @@ windower.register_event('addon command', handle_command)
 -------------------------------------------------------------------------------
 
 windower.register_event('load', function()
+    -- build the (hidden) panel up front so the dock taskbar lists chime
+    build_ui()
     local player = windower.ffxi.get_player()
     if player and player.name then
         char_name = player.name
@@ -1093,13 +1159,17 @@ windower.register_event('logout', function()
     timers = {}
     finished = {}
     char_name = nil
-    display:hide()
+    if ui.built then
+        ui.panel:hide()
+    end
 end)
 
 windower.register_event('unload', function()
     save_timers()
     config.save(settings)
-    display:hide()
+    if ui.built then
+        ui.panel:hide()
+    end
 end)
 
 -------------------------------------------------------------------------------
