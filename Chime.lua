@@ -28,16 +28,17 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 _addon.name = 'Chime'
 _addon.author = 'Jintawk'
-_addon.version = '1.1.1'
+_addon.version = '1.1.2'
 _addon.commands = {'chime', 'timer', 'tm'}
 
 local config = require('config')
--- shared Slate UI lib from the Windower workspace when present (kept
--- current there); the bundled copy makes a standalone clone work
-local ok, slate = pcall(require, 'slate')
+-- shared mythril UI lib from the Windower workspace when present (kept current
+-- there); the bundled copy makes a standalone clone work
+local ok, mythril = pcall(require, 'mythril')
 if not ok then
-    slate = require('slate_bundled')
+    mythril = require('mythril_bundled')
 end
+mythril.set_assets_path(windower.addon_path .. 'assets/')
 
 local defaults = {
     display = {
@@ -81,7 +82,7 @@ local defaults = {
 local settings = config.load(defaults)
 
 -------------------------------------------------------------------------------
--- Slate HUD scaffolding (libs/slate.lua)
+-- mythril HUD scaffolding (libs/mythril.lua)
 -------------------------------------------------------------------------------
 
 local UI_W  = 240
@@ -100,13 +101,14 @@ local function build_ui()
         return
     end
     ui.built = true
-    slate.set_scale(tonumber(settings.ui.scale) or 1)
-    ui.panel = slate.Panel({
+    mythril.set_scale(tonumber(settings.ui.scale) or 1)
+    ui.panel = mythril.Panel({
         x = settings.display.pos.x,
         y = settings.display.pos.y,
+        pos_source = function() return settings.display.pos.x, settings.display.pos.y end,
         w = UI_W,
         content_h = 40,
-        title = 'CHIME',
+        title = 'Chime',
         minimized = settings.ui.minimized,
         on_move = function(x, y)
             settings.display.pos.x = x
@@ -123,9 +125,9 @@ end
 local function ensure_rows(n)
     for i = #ui.rows + 1, n do
         local row = {
-            name = slate.Label({size = 10, color = slate.color.text}),
-            time = slate.Label({size = 10, font = slate.font.mono, color = slate.color.ok}),
-            bar  = slate.Bar({w = 58, h = 10, text = false}),
+            name = mythril.Label({size = 10, color = mythril.color.text}),
+            time = mythril.Label({size = 10, font = mythril.font.mono, color = mythril.color.ok}),
+            bar  = mythril.Bar({w = 58, h = 10, text = false}),
         }
         ui.panel:add(row.name, 10, 0)
         ui.panel:add(row.time, 122, 0)
@@ -136,7 +138,7 @@ end
 
 local function ensure_extras(n)
     for i = #ui.extras + 1, n do
-        local lbl = slate.Label({size = 10, bold = true, color = slate.color.warn})
+        local lbl = mythril.Label({size = 10, bold = true, color = mythril.color.warn})
         ui.panel:add(lbl, 10, 0)
         ui.extras[i] = lbl
     end
@@ -572,7 +574,7 @@ local function render()
         local lbl = ui.extras[extra_i]
         ui.panel:place(lbl, 10, 4 + line * ROW_H)
         lbl:text(f.name .. " - TIME'S UP!")
-        lbl:color(bright and slate.color.warn or slate.color.title)
+        lbl:color(bright and mythril.color.warn or mythril.color.title)
         line = line + 1
     end
 
@@ -583,13 +585,13 @@ local function render()
 
         local col
         if t.paused then
-            col = slate.color.text_faint
+            col = mythril.color.text_faint
         elseif rem <= (tonumber(settings.crit_at) or 10) then
-            col = bright and slate.color.bad or CRIT_DIM
+            col = bright and mythril.color.bad or CRIT_DIM
         elseif rem <= (tonumber(settings.warn_at) or 60) then
-            col = slate.color.warn
+            col = mythril.color.warn
         else
-            col = slate.color.ok
+            col = mythril.color.ok
         end
 
         local label = t.name
@@ -608,11 +610,11 @@ local function render()
         ui.panel:place(row.time, 122, ry + 1)
         ui.panel:place(row.bar, 172, ry + 3)
         row.name:text(label)
-        row.name:color(t.paused and slate.color.text_faint or slate.color.text)
+        row.name:color(t.paused and mythril.color.text_faint or mythril.color.text)
         row.time:text(row_data.clock)
         row.time:color(col)
         if settings.bar.show then
-            row.bar:set(frac, nil, t.paused and slate.color.track_off_hl or col)
+            row.bar:set(frac, nil, t.paused and mythril.color.track_off_hl or col)
         end
         line = line + 1
     end
@@ -622,7 +624,7 @@ local function render()
         local lbl = ui.extras[extra_i]
         ui.panel:place(lbl, 10, 4 + line * ROW_H)
         lbl:text('+' .. hidden .. ' more…')
-        lbl:color(slate.color.text_faint)
+        lbl:color(mythril.color.text_faint)
     end
 
     -- pooled widget visibility for the current row count
@@ -910,10 +912,10 @@ local function cmd_set(key, val)
         msg('Default snooze: ' .. val .. '.')
     elseif key == 'scale' and num then
         settings.ui.scale = math.max(0.5, math.min(3, num))
-        slate.set_scale(settings.ui.scale)
+        mythril.set_scale(settings.ui.scale)
         msg('HUD scale ' .. settings.ui.scale .. '.')
     elseif key == 'size' or key == 'font' or key == 'bg' or key == 'barwidth' then
-        msg('The HUD is styled by Slate now - use //timer set scale <0.5-3>.')
+        msg('The HUD is styled by mythril now - use //timer set scale <0.5-3>.')
         return
     elseif key == 'bar' then
         settings.bar.show = on
@@ -960,7 +962,7 @@ local function cmd_help()
         '//timer clear                remove all timers',
         '//timer sound [name|off]     pick alert sound; sounds lists them, test previews',
         '//timer set <key> <value>    tweak: ' .. SET_KEYS,
-        'Drag the title bar to move it; the minus button minimizes. Timers survive //lua reload and relog.',
+        'Drag the title bar to move it; click the title to minimize. Timers survive //lua reload and relog.',
     }
     for _, l in ipairs(lines) do
         windower.add_to_chat(207, chat_sanitize(l))
@@ -968,7 +970,7 @@ local function cmd_help()
 end
 
 local function handle_command(...)
-    if slate.handle_command(...) then
+    if mythril.handle_command(...) then
         return
     end
     local args = {...}
