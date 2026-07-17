@@ -28,7 +28,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 _addon.name = 'Chime'
 _addon.author = 'Jintawk'
-_addon.version = '1.1.2'
+_addon.version = '1.1.3'
 _addon.commands = {'chime', 'timer', 'tm'}
 
 local config = require('config')
